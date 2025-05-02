@@ -184,7 +184,6 @@ async def mcp_tools_prompt_inject(_ctx: AgentCtx) -> str:
                 lines.append("    No parameters")
     lines.append("Example: mcp_call_tools(server_name, tool_name, params)")
     final_prompt = "\n".join(lines)
-    logger.info(f"MCP Inject Prompt: {final_prompt}")
     return final_prompt
 
 @plugin.mount_sandbox_method(
