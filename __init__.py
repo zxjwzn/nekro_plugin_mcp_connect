@@ -24,8 +24,8 @@ plugin = NekroPlugin(
     module_name="mcp_tools",
     description="从 MCP SSE 服务获取工具并调用",
     version="0.1.0",
-    author="KroMiose",
-    url="https://github.com/KroMiose/nekro-agent",
+    author="Zaxpris & KroMiose",
+    url="https://github.com/zxjwzn/nekro_plugin_mcp_connect",
 )
 
 @plugin.mount_config()
