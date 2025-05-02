@@ -38,13 +38,13 @@ class MCPToolsConfig(ConfigBase):
                 {
                     "name": "github",
                     "endpoint": "http://localhost:8080",
-                    "enabled": true,
+                    "enabled": false,
                     "description": "GitHub 仓库数据查询"
                 },
                 {
                     "name": "weather",
                     "endpoint": "http://localhost:8081",
-                    "enabled": true,
+                    "enabled": false,
                     "description": "天气查询"
                 }
             ]
