@@ -161,7 +161,7 @@ async def mcp_tools_prompt_inject(_ctx: AgentCtx) -> str:
     lines: List[str] = []
     if not mcp_clients:
         return ""
-    lines.append("You can use the following tools to get information or perform actions.")
+    lines.append("You can use the following tools to get information or perform actions by calling the mcp_call_tools function.")
     for server_name, client in mcp_clients.items():
         lines.append(f"Service: {server_name}")
         if not client.tools:
@@ -197,6 +197,9 @@ async def mcp_call_tools(_ctx: AgentCtx, server_name: str, tool_name: str, param
         server_name: MCP 服务名
         tool_name: MCP 工具名
         params: 参数字典
+
+    不要尝试调用 MCP 工具插件 这个服务名, 这个服务名是插件本身, 而不是 MCP 服务
+    正确的服务名应该是: github仓库搜索 天气查询 等等
     """
     # 检测配置变更并重新初始化客户端
     await init_mcp_tools()
