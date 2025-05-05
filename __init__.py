@@ -3,6 +3,7 @@ import json
 from contextlib import AsyncExitStack
 from typing import Any, Dict, List, Optional
 
+import anyio
 import mcp
 from mcp.client.sse import sse_client
 from mcp.types import (
@@ -90,7 +91,12 @@ class MCPClient:
     async def call_tool(self, tool_name: str, params: Dict[str, Any]) -> Any:
         if not self.session:
             raise RuntimeError(f"MCP 服务 [{self.name}] 未连接")
-        return await self.session.call_tool(tool_name, params)
+        try:
+            return await self.session.call_tool(tool_name, params)
+        except anyio.ClosedResourceError as e:
+            logger.warning(f"底层流已关闭，重连 MCP 客户端 [{self.name}] 并重试: {e}")
+            await self._reconnect()
+            return await self.session.call_tool(tool_name, params)
 
     async def close(self):
         """关闭 MCP 会话及 SSE 上下文，忽略跨任务取消范围错误"""
@@ -101,6 +107,17 @@ class MCPClient:
                 logger.warning(f"忽略 MCP 客户端 [{self.name}] 关闭时的跨任务取消范围错误: {e}")
             else:
                 raise
+
+    async def _reconnect(self):
+        """内部方法：关闭旧的 exit_stack 并重新连接 MCP 服务"""
+        try:
+            await self.exit_stack.aclose()
+        except Exception as e:
+            logger.warning(f"重连前关闭旧会话资源失败 [{self.name}]: {e}")
+        # 重新创建 AsyncExitStack 并连接
+        self.exit_stack = AsyncExitStack()
+        await self.connect()
+        await self.load_tools()
 
 # 全局 MCP 客户端实例字典，键为服务名
 mcp_clients: Dict[str, MCPClient] = {}
@@ -183,8 +200,7 @@ async def mcp_tools_prompt_inject(_ctx: AgentCtx) -> str:
             else:
                 lines.append("    No parameters")
     lines.append("Example: mcp_call_tools(server_name, tool_name, params)")
-    final_prompt = "\n".join(lines)
-    return final_prompt
+    return "\n".join(lines)
 
 @plugin.mount_sandbox_method(
     SandboxMethodType.MULTIMODAL_AGENT,
