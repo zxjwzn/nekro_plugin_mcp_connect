@@ -179,6 +179,9 @@ async def mcp_tools_prompt_inject(_ctx: AgentCtx) -> str:
     if not mcp_clients:
         return ""
     lines.append("You can use the following tools to get information or perform actions by calling the mcp_call_tools function.")
+    lines.append("The mcp_call_tools function accepts a list of tool calls, allowing for batch operations.")
+    lines.append("Each tool call in the list should be a dictionary with 'server_name', 'tool_name', and 'params'.")
+
     for server_name, client in mcp_clients.items():
         lines.append(f"Service: {server_name}")
         if not client.tools:
@@ -199,54 +202,67 @@ async def mcp_tools_prompt_inject(_ctx: AgentCtx) -> str:
                     lines.append(f"      - {prop} ({ptype}, {req_text}) {pdesc}")
             else:
                 lines.append("    No parameters")
-    lines.append("Example: mcp_call_tools(server_name, tool_name, params)")
+    lines.append("Example for a single call: mcp_call_tools(tool_calls=[{'server_name': 'your_server', 'tool_name': 'your_tool', 'params': {'param1': 'value1'}}])")
+    lines.append("Example for multiple calls: mcp_call_tools(tool_calls=[{'server_name': 'server1', 'tool_name': 'tool_a', 'params': {}}, {'server_name': 'server2', 'tool_name': 'tool_b', 'params': {'key': 'val'}}])")
     return "\n".join(lines)
 
 @plugin.mount_sandbox_method(
     SandboxMethodType.MULTIMODAL_AGENT,
     name="调用 MCP 工具",
-    description="通过 MCP 服务名、工具名和参数调用对应工具",
+    description="通过 MCP 服务名、工具名和参数列表批量调用对应工具",
 )
-async def mcp_call_tools(_ctx: AgentCtx, server_name: str, tool_name: str, params: Dict[str, Any]) -> Any:
-    """调用 MCP 工具
+async def mcp_call_tools(_ctx: AgentCtx, tool_calls: List[Dict[str, Any]]) -> List[Any]:
+    """批量调用 MCP 工具
     Args:
-        server_name: MCP 服务名
-        tool_name: MCP 工具名
-        params: 参数字典
+        tool_calls: 一个列表，其中每个元素是一个字典，包含:
+            server_name: MCP 服务名
+            tool_name: MCP 工具名
+            params: 参数字典
 
     不要尝试调用 MCP 工具插件 这个服务名, 这个服务名是插件本身, 而不是 MCP 服务
     正确的服务名应该是: github仓库搜索 天气查询 等等
     """
     # 检测配置变更并重新初始化客户端
     await init_mcp_tools()
-    client = mcp_clients.get(server_name)
-    if not client:
-        raise ValueError(f"MCP 服务 [{server_name}] 未找到或未启用")
-    try:
-        result = await client.call_tool(tool_name, params)
-        # 构造多模态消息，类似 emotion 插件
-        msg = OpenAIChatMessage.create_empty("user")
-        # CallToolResult may use 'content' or 'contents'
-        items = getattr(result, "content", None) or getattr(result, "contents", [])
-        for item in items:
-            if isinstance(item, TextContent):
-                msg.add(ContentSegment.text_content(item.text))
-            elif isinstance(item, ImageContent):
-                # 使用 data URI 嵌入图片
-                uri = f"data:{item.mimeType};base64,{item.data}"
-                msg.add(ContentSegment.image_content(uri))
-            elif isinstance(item, EmbeddedResource):
-                res = item.resource
-                if isinstance(res, TextResourceContents):
-                    msg.add(ContentSegment.text_content(res.text))
-                elif isinstance(res, BlobResourceContents):
-                    blob_uri = f"data:{getattr(res, 'mimeType', 'application/octet-stream')};base64,{res.blob}"
-                    msg.add(ContentSegment.image_content(blob_uri))
-        # 直接返回列表形式的 content，避免将所有文本合并为字符串导致后续 extend 出错
-        return {"role": msg.role, "content": msg.content}  # noqa: TRY300
-    except Exception as e:
-        logger.error(f"调用 MCP 工具 [{server_name}.{tool_name}] 失败: {e}")
-        raise
+    results = []
+    for call in tool_calls:
+        server_name = call.get("server_name")
+        tool_name = call.get("tool_name")
+        params = call.get("params", {})
+
+        if not server_name or not tool_name:
+            results.append({"error": "Missing server_name or tool_name in a tool call.", "call": call})
+            continue
+
+        client = mcp_clients.get(server_name)
+        if not client:
+            results.append({"error": f"MCP 服务 [{server_name}] 未找到或未启用", "call": call})
+            continue
+        try:
+            result = await client.call_tool(tool_name, params)
+            # 构造多模态消息，类似 emotion 插件
+            msg = OpenAIChatMessage.create_empty("user")
+            # CallToolResult may use 'content' or 'contents'
+            items = getattr(result, "content", None) or getattr(result, "contents", [])
+            for item in items:
+                if isinstance(item, TextContent):
+                    msg.add(ContentSegment.text_content(item.text))
+                elif isinstance(item, ImageContent):
+                    # 使用 data URI 嵌入图片
+                    uri = f"data:{item.mimeType};base64,{item.data}"
+                    msg.add(ContentSegment.image_content(uri))
+                elif isinstance(item, EmbeddedResource):
+                    res = item.resource
+                    if isinstance(res, TextResourceContents):
+                        msg.add(ContentSegment.text_content(res.text))
+                    elif isinstance(res, BlobResourceContents):
+                        blob_uri = f"data:{getattr(res, 'mimeType', 'application/octet-stream')};base64,{res.blob}"
+                        msg.add(ContentSegment.image_content(blob_uri))
+            results.append({"role": msg.role, "content": msg.content})
+        except Exception as e:
+            logger.error(f"调用 MCP 工具 [{server_name}.{tool_name}] 失败: {e}")
+            results.append({"error": str(e), "call": call})
+    return results
 
 @plugin.mount_cleanup_method()
 async def clean_up():
