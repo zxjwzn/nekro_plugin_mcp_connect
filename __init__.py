@@ -38,16 +38,14 @@ class MCPToolsConfig(ConfigBase):
         {
             "servers": [
                 {
-                    "name": "github",
                     "endpoint": "http://localhost:8080",
                     "enabled": false,
-                    "description": "GitHub 仓库数据查询"
+                    "description": "GitHub 仓库数据查询",//描述mcp服务内容,方便管理
                 },
                 {
-                    "name": "weather",
                     "endpoint": "http://localhost:8081",
                     "enabled": false,
-                    "description": "天气查询"
+                    "description": "天气查询" //描述mcp服务内容,方便管理
                 }
             ]
         }
@@ -56,15 +54,10 @@ class MCPToolsConfig(ConfigBase):
         description='使用 JSON 格式配置 MCP 服务，支持多个服务并指定其属性 <br><br>配置格式示例：<pre>{<br>  "servers": [<br>    {<br>      "name": "github",<br>      "endpoint": "http://localhost:8080",<br>      "enabled": true,<br>      "description": "GitHub 仓库数据查询"<br>    },<br>    {<br>      "name": "weather",<br>      "endpoint": "http://localhost:8081",<br>      "enabled": true,<br>      "description": "天气查询"<br>    }<br>  ]<br>}</pre>',
         json_schema_extra={"is_textarea": True},
     )
-    PING_INTERVAL: int = Field(
-        default=60,
-        title="Ping 间隔 (秒)",
-        description="Ping 间隔时间，单位为秒。默认值为 60 秒。",
-    )
 
 class MCPClient:
-    def __init__(self, name: str, endpoint: str):
-        self.name = name
+    def __init__(self, endpoint: str):
+        self.name = "Unknown Server"
         self.endpoint = endpoint
         self.headers: Dict[str, str] = {}
         self.session: Optional[mcp.ClientSession] = None
@@ -96,7 +89,8 @@ class MCPClient:
                         write_stream,
                     ),
                 )
-            await self.session.initialize()
+            init = await self.session.initialize()
+            self.name = init.serverInfo.name
             logger.info(f"MCP 服务 [{self.name}] 连接成功")
         except Exception as e:
             logger.error(f"连接或初始化 MCP 会话失败: {e}", exc_info=True)
@@ -156,54 +150,12 @@ class MCPClient:
         # Proceed with reconnection
         await self.connect()  # This will create a new AsyncExitStack
         await self.load_tools()
-    
-    async def send_ping(self) -> bool:
-        """
-        发送Ping请求以保持连接或检查其状态。
-
-        Returns:
-            如果Ping请求已发送且成功确认（或至少在没有立即错误的情况下发送），则返回True，否则返回False。
-        """
-
-        logger.info(f"MCP 客户端 [{self.name}] 发送Ping请求")
-        try:
-            if self.session:
-                await self.session.send_ping() 
-                logger.info(f"MCP 客户端 [{self.name}] Ping发送成功")
-                return True
-            logger.error(f"MCP 客户端 [{self.name}] 会话未连接")
-            
-        except Exception as e:
-            logger.error(f"MCP 客户端 [{self.name}] Ping发送失败: {e}", exc_info=True)
-            return False
-        
-        return False
-
-# 后台 ping 循环任务，每分钟发送 Ping 并在失败时重连
-async def _ping_loop(client: MCPClient) -> None:
-    """
-    后台 ping 循环任务，每分钟发送 ping 并在失败时重连。
-    """
-    while True:
-        try:
-            success = await client.send_ping()
-            if not success:
-                logger.warning(f"MCP 客户端 [{client.name}] ping 失败，尝试重连...")
-                await client.reconnect()
-                await client.load_tools()
-                logger.info(f"MCP 客户端 [{client.name}] 重连成功")
-        except Exception as e:
-            logger.error(f"MCP 客户端 [{client.name}] ping 循环出错: {e}", exc_info=True)
-        await asyncio.sleep(plugin.get_config(MCPToolsConfig).PING_INTERVAL)
 
 # 全局 MCP 客户端实例字典，键为服务名
 mcp_clients: Dict[str, MCPClient] = {}
 
 # 当前配置哈希，用于变更检测
 mcp_config_hash: Optional[str] = None
-
-# 全局 ping 循环任务字典，键为服务名
-mcp_ping_tasks: Dict[str, asyncio.Task] = {}
 
 def _compute_config_hash(config_json: str) -> str:
     try:
@@ -216,7 +168,7 @@ def _compute_config_hash(config_json: str) -> str:
 @plugin.mount_init_method()
 async def init_mcp_tools():
     """插件初始化时读取配置并初始化连接 MCP 服务"""
-    global mcp_clients, mcp_config_hash, mcp_ping_tasks
+    global mcp_clients, mcp_config_hash
     config = plugin.get_config(MCPToolsConfig)
     try:
         config_dict = cast(Dict[str, Any], json5.loads(config.MCP_CONFIG_JSON))
@@ -236,21 +188,17 @@ async def init_mcp_tools():
     mcp_clients.clear()
     mcp_config_hash = new_hash
     for srv in servers:
-        name = srv.get("name")
         endpoint = srv.get("endpoint")
         enabled = srv.get("enabled", True)
-        if not name or not endpoint or not enabled:
+        if not enabled:
             continue
-        client = MCPClient(name=name, endpoint=endpoint)
+        client = MCPClient(endpoint=endpoint)
         try:
             await client.connect()
             await client.load_tools()
-            mcp_clients[name] = client
-            # 启动后台 ping 循环任务并记录
-            task = asyncio.create_task(_ping_loop(client))
-            mcp_ping_tasks[name] = task
+            mcp_clients[client.name] = client
         except Exception as e:
-            logger.error(f"初始化 MCP 客户端 [{name}] 失败: {e}")
+            logger.error(f"初始化 MCP 客户端 [{client.name}] 失败: {e}")
     
     
 
@@ -391,12 +339,6 @@ async def clean_up():
             await client.close()
         except Exception as e:
             logger.error(f"关闭 MCP 客户端 [{client.name}] 失败: {e}")
-    # 取消所有后台 ping 循环任务
-    for task in mcp_ping_tasks.values():
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
-    mcp_ping_tasks.clear()
     # 清空全局缓存和哈希
     mcp_clients.clear()
     mcp_config_hash = None
