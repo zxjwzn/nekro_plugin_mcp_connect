@@ -237,6 +237,7 @@ async def mcp_tools_prompt_inject(_ctx: AgentCtx) -> str:
                 lines.append("    No parameters")
     lines.append("Example for a single call: mcp_call_tools(tool_calls=[{'server_name': 'your_server', 'tool_name': 'your_tool', 'params': {'param1': 'value1'}}])")
     lines.append("Example for multiple calls: mcp_call_tools(tool_calls=[{'server_name': 'server1', 'tool_name': 'tool_a', 'params': {}}, {'server_name': 'server2', 'tool_name': 'tool_b', 'params': {'key': 'val'}}])")
+    lines.append("DO NOT use the content returned by a tool in one call as input for another tool call within the same interaction.")
     return "\n".join(lines)
 
 @plugin.mount_sandbox_method(
@@ -258,6 +259,7 @@ async def mcp_call_tools(_ctx: AgentCtx, tool_calls: List[Dict[str, Any]]) -> Li
 
     不要尝试调用 MCP 工具插件 这个服务名, 这个服务名是插件本身, 而不是 MCP 服务
     正确的服务名应该是: github仓库搜索 天气查询 等等
+    DO NOT use the content returned by a tool in one call as input for another tool call within the same interaction.
     """
     # 检测配置变更并重新初始化客户端
     await init_mcp_tools()
