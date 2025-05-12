@@ -1,11 +1,15 @@
 import asyncio
 import hashlib
 from contextlib import AsyncExitStack, suppress
+from datetime import timedelta
 from typing import Any, Dict, List, Optional, cast
 
 import anyio
+import httpx
 import json5
 import mcp
+from anyio import move_on_after
+from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from mcp.client.sse import sse_client
 from mcp.types import (
     BlobResourceContents,
@@ -33,6 +37,11 @@ plugin = NekroPlugin(
 @plugin.mount_config()
 class MCPToolsConfig(ConfigBase):
     """MCP 服务配置"""
+    MCP_TIMEOUT: float = Field(
+        default=10.0,
+        title="MCP 连接超时时间 (秒)",
+        description="MCP 连接超时时间，单位为秒",
+    )
     MCP_CONFIG_JSON: str = Field(
         default="""
         {
@@ -56,13 +65,14 @@ class MCPToolsConfig(ConfigBase):
     )
 
 class MCPClient:
-    def __init__(self, endpoint: str):
+    def __init__(self, endpoint: str, connect_timeout: float = 10.0):
         self.name = "Unknown Server"
         self.endpoint = endpoint
         self.headers: Dict[str, str] = {}
         self.session: Optional[mcp.ClientSession] = None
         self.exit_stack = AsyncExitStack()
         self.tools: List[mcp.Tool] = []
+        self.connect_timeout = connect_timeout
 
     def set_auth_token(self, token: str) -> None:
         """
@@ -77,10 +87,12 @@ class MCPClient:
     async def connect(self):
         """连接到 MCP 服务器"""
         try:
+            init = None
             self.exit_stack = AsyncExitStack()
+            logger.info(f"尝试连接到 MCP 服务器: {self.endpoint} (超时: {self.connect_timeout}s)")
             # 使用 AsyncExitStack 管理 SSE 客户端上下文和 MCP 会话
             streams = await self.exit_stack.enter_async_context(
-                    sse_client(self.endpoint, headers=self.headers),
+                    sse_client(self.endpoint, headers=self.headers, timeout=self.connect_timeout),
                 )
             read_stream, write_stream = streams
             self.session = await self.exit_stack.enter_async_context(
@@ -89,9 +101,29 @@ class MCPClient:
                         write_stream,
                     ),
                 )
-            init = await self.session.initialize()
-            self.name = init.serverInfo.name
+            
+            with anyio.move_on_after(self.connect_timeout) as scope:
+                init = await self.session.initialize()
+                self.name = init.serverInfo.name
+            
+            if scope.cancelled_caught:
+                logger.error(f"MCP 会话初始化超时 ({self.connect_timeout}s) for {self.endpoint}")
+                raise TimeoutError(f"MCP session initialization timed out after {self.connect_timeout}s for {self.endpoint}")  # noqa: TRY301
             logger.info(f"MCP 服务 [{self.name}] 连接成功")
+        except httpx.TimeoutException as e:
+            logger.error(f"连接 MCP 服务器 {self.endpoint} 超时 ({self.connect_timeout}s): {e}", exc_info=True)
+            if self.exit_stack:
+                await self.exit_stack.aclose()
+            self.exit_stack = None
+            self.session = None
+            raise 
+        except ConnectionRefusedError as e:
+            logger.error(f"连接 MCP 服务器 {self.endpoint} 被拒绝: {e}", exc_info=True)
+            if self.exit_stack:
+                await self.exit_stack.aclose()
+            self.exit_stack = None
+            self.session = None
+            raise
         except Exception as e:
             logger.error(f"连接或初始化 MCP 会话失败: {e}", exc_info=True)
             if self.exit_stack:
@@ -192,7 +224,7 @@ async def init_mcp_tools():
         enabled = srv.get("enabled", True)
         if not enabled:
             continue
-        client = MCPClient(endpoint=endpoint)
+        client = MCPClient(endpoint=endpoint, connect_timeout=config.MCP_TIMEOUT)
         try:
             await client.connect()
             await client.load_tools()
@@ -334,7 +366,7 @@ async def mcp_call_tools(_ctx: AgentCtx, tool_calls: List[Dict[str, Any]]) -> Li
 @plugin.mount_cleanup_method()
 async def clean_up():
     """清理 MCP 工具插件资源"""
-    global mcp_clients, mcp_config_hash, mcp_ping_tasks
+    global mcp_clients, mcp_config_hash
     # 关闭所有客户端
     for client in mcp_clients.values():
         try:
