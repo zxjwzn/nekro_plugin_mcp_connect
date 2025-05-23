@@ -60,7 +60,7 @@ class MCPToolsConfig(ConfigBase):
         }
         """,
         title="MCP 服务配置 (JSON格式)",
-        description='使用 JSON 格式配置 MCP 服务，支持多个服务并指定其属性 <br><br>配置格式示例：<pre>{<br>  "servers": [<br>    {<br>      "name": "github",<br>      "endpoint": "http://localhost:8080",<br>      "enabled": true,<br>      "description": "GitHub 仓库数据查询"<br>    },<br>    {<br>      "name": "weather",<br>      "endpoint": "http://localhost:8081",<br>      "enabled": true,<br>      "description": "天气查询"<br>    }<br>  ]<br>}</pre>',
+        description='使用 JSON 格式配置 MCP 服务，支持多个服务并指定其属性 <br><br>配置格式示例：<pre>{<br>  "servers": [<br>    {<br>      "endpoint": "http://localhost:8080",<br>      "enabled": false,<br>      "description": "GitHub 仓库数据查询"<br>    },<br>    {<br>      "endpoint": "http://localhost:8081",<br>      "enabled": false,<br>      "description": "天气查询"<br>    }<br>  ]<br>}</pre>',
         json_schema_extra={"is_textarea": True},
     )
 
